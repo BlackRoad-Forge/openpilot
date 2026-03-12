@@ -424,6 +424,62 @@ function op_stop() {
   fi
 }
 
+function op_proc() {
+  op_before_cmd
+
+  if [ -z "$1" ]; then
+    echo -e "${BOLD}${UNDERLINE}Usage:${NC} op proc <MODULE_PATH> [ARGS...]"
+    echo ""
+    echo "  Restart an openpilot process by its Python module path."
+    echo "  Kills any existing instance and starts it fresh."
+    echo ""
+    echo -e "${BOLD}${UNDERLINE}Examples:${NC}"
+    echo "  op proc system.webrtc.webrtcd"
+    echo "  op proc system.webrtc.webrtcd --port 5002"
+    echo "  op proc selfdrive.ui.ui"
+    return 1
+  fi
+
+  MODULE="$1"
+  shift
+  ARGS="$@"
+
+  # convert dots to slashes for matching against process cmdlines
+  MODULE_AS_PATH="${MODULE//\.//}"
+
+  # find and kill existing processes matching this module
+  PIDS=$(pgrep -f "(python.*${MODULE}|python.*${MODULE_AS_PATH}|${MODULE_AS_PATH})" 2>/dev/null || true)
+  # filter out our own PID and parent shell
+  PIDS=$(echo "$PIDS" | grep -v "^$$\$" | grep -v "^$PPID\$" | tr '\n' ' ' | xargs)
+
+  if [[ -n "$PIDS" ]]; then
+    echo -e " ↳ Stopping existing process(es): ${BOLD}${PIDS}${NC}"
+    kill -INT $PIDS 2>/dev/null || true
+    # wait up to 5 seconds for graceful shutdown
+    for i in $(seq 1 50); do
+      REMAINING=$(echo "$PIDS" | tr ' ' '\n' | while read p; do
+        [ -n "$p" ] && kill -0 "$p" 2>/dev/null && echo "$p"
+      done | tr '\n' ' ' | xargs)
+      if [[ -z "$REMAINING" ]]; then
+        break
+      fi
+      sleep 0.1
+    done
+    # force kill any stragglers
+    if [[ -n "$REMAINING" ]]; then
+      echo -e " ↳ Force killing: ${BOLD}${REMAINING}${NC}"
+      kill -9 $REMAINING 2>/dev/null || true
+      sleep 0.5
+    fi
+    echo -e " ↳ [${GREEN}✔${NC}] Stopped."
+  else
+    echo -e " ↳ No existing process found for ${BOLD}${MODULE}${NC}"
+  fi
+
+  echo -e " ↳ Starting ${BOLD}${MODULE}${NC}..."
+  op_run_command python -m "$MODULE" $ARGS
+}
+
 function op_default() {
   echo "An openpilot helper"
   echo ""
@@ -445,6 +501,7 @@ function op_default() {
   echo -e "  ${BOLD}switch${NC}       Switch to a different git branch with a clean slate (nukes any changes)"
   echo -e "  ${BOLD}start${NC}        Starts (or restarts) openpilot"
   echo -e "  ${BOLD}stop${NC}         Stops openpilot"
+  echo -e "  ${BOLD}proc${NC}         Restart an individual process by module path (e.g. system.webrtc.webrtcd)"
   echo ""
   echo -e "${BOLD}${UNDERLINE}Commands [Tooling]:${NC}"
   echo -e "  ${BOLD}juggle${NC}       Run PlotJuggler"
@@ -513,6 +570,7 @@ function _op() {
     start )         shift 1; op_start "$@" ;;
     stop )          shift 1; op_stop "$@" ;;
     restart )       shift 1; op_restart "$@" ;;
+    proc )          shift 1; op_proc "$@" ;;
     post-commit )   shift 1; op_install_post_commit "$@" ;;
     adb )           shift 1; op_adb "$@" ;;
     ssh )           shift 1; op_ssh "$@" ;;
