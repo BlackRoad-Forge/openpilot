@@ -13,6 +13,39 @@ from openpilot.tools.cabana import styles
 from opendbc.can.dbc import Signal
 
 TITLE_H = 36
+
+
+def _resize_signal(old_sig: Signal, fixed_bit: int, dragged_to: int, n_bytes: int = 8) -> Signal | None:
+  """Resize a signal by keeping fixed_bit in place and moving the other end to dragged_to.
+  Returns new Signal or None if invalid."""
+  new_sig = copy.deepcopy(old_sig)
+
+  if old_sig.is_little_endian:
+    lo = min(fixed_bit, dragged_to)
+    hi = max(fixed_bit, dragged_to)
+    new_sig.size = hi - lo + 1
+    new_sig.lsb = lo
+    new_sig.msb = hi
+    new_sig.start_bit = lo
+  else:
+    # BE: convert to sequential space via flip, compute size, convert back
+    fixed_seq = _flip_bit_pos(fixed_bit)
+    dragged_seq = _flip_bit_pos(dragged_to)
+    lo_seq = min(fixed_seq, dragged_seq)
+    hi_seq = max(fixed_seq, dragged_seq)
+    new_sig.size = hi_seq - lo_seq + 1
+    new_sig.start_bit = _flip_bit_pos(lo_seq)  # MSB
+    new_sig.msb = new_sig.start_bit
+    # Recompute lsb from bit set
+    bits: set[int] = set()
+    for j in range(new_sig.size):
+      pos = _flip_bit_pos(new_sig.start_bit) + j
+      bits.add(_flip_bit_pos(pos))
+    new_sig.lsb = min(bits) if bits else 0
+
+  if new_sig.size <= 0 or new_sig.size > n_bytes * 8:
+    return None
+  return new_sig
 HEADER_ROW_H = 28
 CELL_H = 36
 
@@ -325,57 +358,29 @@ class BinaryView(Widget):
     if not self._drag_start or not self._drag_end or not self._selected_mid:
       return
 
-    s_byte, s_bit = self._drag_start
-    e_byte, e_bit = self._drag_end
-
-    s_flat = s_byte * 8 + (7 - s_bit)
-    e_flat = e_byte * 8 + (7 - e_bit)
-    if s_flat > e_flat:
-      s_flat, e_flat = e_flat, s_flat
-
-    size = e_flat - s_flat + 1
-    if size <= 0 or size > n_bytes * 8:
-      return
-
+    drag_start_flat = self._drag_start[0] * 8 + (7 - self._drag_start[1])
+    drag_end_flat = self._drag_end[0] * 8 + (7 - self._drag_end[1])
     address = self._selected_mid[1]
 
     if self._drag_mode == "resize" and self._resize_sig:
       old_sig = self._resize_sig
+      # Fixed end is whichever endpoint wasn't dragged
+      fixed_bit = old_sig.msb if drag_start_flat == old_sig.lsb else old_sig.lsb
+      new_sig = _resize_signal(old_sig, fixed_bit, drag_end_flat, n_bytes)
+      if new_sig:
+        cmd = EditSignalCommand(self._dbc, address, old_sig, new_sig)
+        self._undo_stack.push(cmd)
 
-      # Use sig.lsb/msb directly (correct for both LE and BE)
-      drag_start_flat = self._drag_start[0] * 8 + (7 - self._drag_start[1])
-      drag_end_flat = self._drag_end[0] * 8 + (7 - self._drag_end[1])
-
-      if drag_start_flat == old_sig.lsb:
-        # Dragged the LSB end — keep MSB fixed
-        new_lsb = drag_end_flat
-        new_msb = old_sig.msb
-      else:
-        # Dragged the MSB end — keep LSB fixed
-        new_lsb = old_sig.lsb
-        new_msb = drag_end_flat
-
-      if new_lsb > new_msb:
-        new_lsb, new_msb = new_msb, new_lsb
-
-      new_size = new_msb - new_lsb + 1
-      if new_size <= 0 or new_size > n_bytes * 8:
-        return
-
-      new_sig = copy.deepcopy(old_sig)
-      new_sig.size = new_size
-      new_sig.lsb = new_lsb
-      new_sig.msb = new_msb
-      # start_bit convention: LE uses lsb, BE uses msb
-      new_sig.start_bit = new_lsb if old_sig.is_little_endian else new_msb
-      cmd = EditSignalCommand(self._dbc, address, old_sig, new_sig)
-      self._undo_stack.push(cmd)
     elif self._drag_mode == "create":
-      name = self._dbc.next_signal_name(address)
-      sig = Signal(name=name, start_bit=s_flat, msb=s_flat + size - 1, lsb=s_flat,
-                   size=size, is_signed=False, factor=1.0, offset=0.0, is_little_endian=True)
-      cmd = AddSignalCommand(self._dbc, address, sig)
-      self._undo_stack.push(cmd)
+      lo = min(drag_start_flat, drag_end_flat)
+      hi = max(drag_start_flat, drag_end_flat)
+      size = hi - lo + 1
+      if 0 < size <= n_bytes * 8:
+        name = self._dbc.next_signal_name(address)
+        sig = Signal(name=name, start_bit=lo, msb=hi, lsb=lo,
+                     size=size, is_signed=False, factor=1.0, offset=0.0, is_little_endian=True)
+        cmd = AddSignalCommand(self._dbc, address, sig)
+        self._undo_stack.push(cmd)
 
     if self._on_signal_created:
       self._on_signal_created()
@@ -420,13 +425,11 @@ class BinaryView(Widget):
     if self._drag_mode == "resize" and self._resize_sig:
       sig = self._resize_sig
       drag_start_flat = self._drag_start[0] * 8 + (7 - self._drag_start[1])
-      if drag_start_flat == sig.lsb:
-        # Dragging LSB — MSB is fixed
-        lo, hi = min(drag_end_flat, sig.msb), max(drag_end_flat, sig.msb)
-      else:
-        # Dragging MSB — LSB is fixed
-        lo, hi = min(drag_end_flat, sig.lsb), max(drag_end_flat, sig.lsb)
-      return lo <= flat <= hi
+      fixed_bit = sig.msb if drag_start_flat == sig.lsb else sig.lsb
+      preview = _resize_signal(sig, fixed_bit, drag_end_flat, n_bytes)
+      if preview is None:
+        return False
+      return flat in self._signal_bit_set(preview, n_bytes)
     else:
       # Create mode: simple range between start and end
       s_flat = self._drag_start[0] * 8 + (7 - self._drag_start[1])
