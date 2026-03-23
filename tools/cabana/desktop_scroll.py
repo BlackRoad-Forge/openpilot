@@ -19,9 +19,11 @@ class DesktopScrollPanel:
     bounds_h = bounds.height
     max_scroll = min(0.0, bounds_h - content_size)
 
-    # Only respond to wheel when mouse is over bounds
+    # Only respond to wheel when mouse is over bounds and shift is NOT held
+    # (shift+wheel is used for horizontal scroll by the table)
     mouse_pos = gui_app.last_mouse_event.pos
-    if rl.check_collision_point_rec(mouse_pos, bounds):
+    shift_held = rl.is_key_down(rl.KeyboardKey.KEY_LEFT_SHIFT) or rl.is_key_down(rl.KeyboardKey.KEY_RIGHT_SHIFT)
+    if not shift_held and rl.check_collision_point_rec(mouse_pos, bounds):
       wheel = rl.get_mouse_wheel_move()
       if wheel != 0:
         self._target += wheel * self.SCROLL_SPEED

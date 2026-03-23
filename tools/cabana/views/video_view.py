@@ -50,7 +50,9 @@ class VideoView(Widget):
     def _do():
       try:
         from openpilot.tools.lib.route import Route
-        paths = Route(self._stream.route).camera_paths()
+        # Strip segment suffix (e.g. "/0") if present
+        route_name = self._stream.route.rsplit('/', 1)[0] if self._stream.route.count('/') > 1 else self._stream.route
+        paths = Route(route_name).camera_paths()
         if paths:
           self._camera_paths = paths
           self._route_resolved = True
@@ -96,6 +98,15 @@ class VideoView(Widget):
         self._frame_width = w
         self._frame_height = h
       self._last_displayed = (s, f)
+
+      # Pre-decode next GOP so it's cached when we get there
+      # GOP is ~20 frames, so prefetch the start of the next one
+      next_gop = reader.decoder.get_gop_start(min(f + 20, reader.frame_count - 1))
+      if next_gop > f:
+        try:
+          reader.get(next_gop)
+        except Exception:
+          pass
 
     self._decode_thread = threading.Thread(target=_do, daemon=True)
     self._decode_thread.start()

@@ -3,24 +3,24 @@ from __future__ import annotations
 
 import pyray as rl
 
-# Background colors (from Qt cabana dark theme)
-BG = rl.Color(27, 29, 35, 255)            # #1B1D23 - main background
-PANEL_BG = rl.Color(37, 40, 48, 255)      # #252830 - panel/header background
-HEADER_BG = rl.Color(37, 40, 48, 255)     # #252830
-SELECTED_BG = rl.Color(49, 66, 105, 255)  # #314269 - selected row
-HOVER_BG = rl.Color(40, 43, 55, 255)      # row hover
-ROW_BG = rl.Color(27, 29, 35, 255)        # same as BG
-ROW_ALT_BG = rl.Color(30, 32, 40, 255)    # alternating row
+# Background colors (neutral greys matching Qt dark theme palette)
+BG = rl.Color(45, 45, 45, 255)            # QPalette::Window (~#2d2d2d)
+PANEL_BG = rl.Color(53, 53, 53, 255)      # QPalette::Base (~#353535)
+HEADER_BG = rl.Color(53, 53, 53, 255)
+SELECTED_BG = rl.Color(42, 130, 218, 255) # QPalette::Highlight
+HOVER_BG = rl.Color(60, 60, 60, 255)      # row hover
+ROW_BG = rl.Color(45, 45, 45, 255)        # same as BG
+ROW_ALT_BG = rl.Color(50, 50, 50, 255)    # QPalette::AlternateBase
 
 # Text colors
-TEXT = rl.Color(220, 220, 220, 255)
-TEXT_DIM = rl.Color(140, 140, 140, 255)
-TEXT_MUTED = rl.Color(100, 100, 100, 255)
-ACCENT = rl.Color(100, 160, 255, 255)     # blue accent
+TEXT = rl.Color(208, 208, 208, 255)        # QPalette::Text
+TEXT_DIM = rl.Color(128, 128, 128, 255)
+TEXT_MUTED = rl.Color(85, 85, 85, 255)
+ACCENT = rl.Color(42, 130, 218, 255)      # QPalette::Highlight
 
 # Border / grid
-BORDER = rl.Color(55, 58, 68, 255)
-GRID = rl.Color(45, 48, 58, 255)
+BORDER = rl.Color(60, 60, 60, 255)
+GRID = rl.Color(58, 58, 58, 255)
 
 # Binary view heatmap
 HEATMAP_RED = rl.Color(200, 60, 60, 255)
@@ -57,7 +57,7 @@ DRAG_HIGHLIGHT = rl.Color(100, 160, 255, 100)
 
 # Layout constants
 MENU_BAR_H = 26
-TOOLBAR_H = 60
+TOOLBAR_H = 36
 TAB_BAR_H = 28
 FONT_SIZE = 22
 SMALL_FONT = 18

@@ -33,12 +33,12 @@ COL_COUNT = 4
 COL_DATA = 5
 
 COLUMNS = [
-  TableColumn("Bus", 30, sortable=True),
-  TableColumn("Addr", 60, sortable=True),
-  TableColumn("Name", 180, sortable=True, filterable=True),
-  TableColumn("Freq", 45, sortable=True, align=2),
-  TableColumn("Count", 55, sortable=True, align=2),
-  TableColumn("Data", 180, sortable=False),
+  TableColumn("Bus", 35, sortable=True),
+  TableColumn("Addr", 70, sortable=True),
+  TableColumn("Name", 220, sortable=True, filterable=True),
+  TableColumn("Freq", 55, sortable=True, align=2),
+  TableColumn("Count", 65, sortable=True, align=2),
+  TableColumn("Data", 200, sortable=False),
 ]
 
 

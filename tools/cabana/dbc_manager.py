@@ -77,7 +77,8 @@ class DBCManager:
       for name, sig in self._overlay[address].items():
         result[name] = sig
 
-    return list(result.values())
+    # Sort by start_bit so adjacent signals get sequential colors
+    return sorted(result.values(), key=lambda s: s.start_bit)
 
   def add_signal(self, address: int, signal: Signal) -> None:
     """Add a signal to the overlay."""

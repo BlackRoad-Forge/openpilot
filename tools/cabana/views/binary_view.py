@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import copy
-import math
 import pyray as rl
 from collections.abc import Callable
 
@@ -17,10 +16,6 @@ TITLE_H = 36
 HEADER_ROW_H = 28
 CELL_H = 36
 
-# Signal cell base color matching Qt cabana (greyish-blue, dark theme .lighter(135))
-SIGNAL_BASE_COLOR = rl.Color(138, 116, 228, 255)
-# Signal border color (drawn around signal groups)
-SIGNAL_BORDER_ALPHA = 180
 
 
 class BinaryView(Widget):
@@ -50,10 +45,9 @@ class BinaryView(Widget):
     self._drag_mode: str = ""  # "create", "resize", or ""
     self._resize_sig: Signal | None = None
 
-    # Selection / hover
+    # Hover
     self._hovered_cell: tuple[int, int] | None = None
     self._hovered_signal: Signal | None = None
-    self._selected_signal: Signal | None = None
 
   def set_message(self, mid: MessageId | None, data: MessageData | None) -> None:
     self._selected_mid = mid
@@ -98,10 +92,7 @@ class BinaryView(Widget):
 
   def _is_signal_boundary(self, sig: Signal, byte_idx: int, bit_col: int, n_bytes: int) -> bool:
     bit_pos = byte_idx * 8 + (7 - bit_col)
-    bits = sorted(self._signal_bit_set(sig, n_bytes))
-    if not bits:
-      return False
-    return bit_pos == bits[0] or bit_pos == bits[-1]
+    return bit_pos == sig.lsb or bit_pos == sig.msb
 
   def _render(self, rect: rl.Rectangle):
     rl.draw_rectangle(int(rect.x), int(rect.y), int(rect.width), int(rect.height), styles.BG)
@@ -122,7 +113,7 @@ class BinaryView(Widget):
     # Title
     name = self._dbc.msg_name(mid[1]) or f"0x{mid[1]:03X}"
     title = f"{name}  Bus:{mid[0]}  0x{mid[1]:03X}  [{n_bytes}]"
-    rl.draw_text_ex(font, title, rl.Vector2(rect.x + styles.PAD, rect.y + 8), 20, 0, rl.WHITE)
+    rl.draw_text_ex(font, title, rl.Vector2(rect.x + styles.PAD, rect.y + 8), 16, 0, rl.WHITE)
 
     # Cell sizes
     label_w = 28
@@ -135,21 +126,14 @@ class BinaryView(Widget):
 
     # Column headers
     rl.draw_rectangle(int(rect.x), int(grid_y), int(rect.width), HEADER_ROW_H, styles.HEADER_BG)
-    hdr_sz = 16
+    hdr_sz = 13
     for bit in range(8):
       hx = grid_x + bit * cell_w + cell_w / 2
-      rl.draw_text_ex(font, str(7 - bit), rl.Vector2(hx - 4, grid_y + 6), hdr_sz, 0, styles.TEXT_DIM)
+      rl.draw_text_ex(font, str(7 - bit), rl.Vector2(hx - 3, grid_y + 7), hdr_sz, 0, styles.TEXT_DIM)
     hx = grid_x + 8 * cell_w
-    rl.draw_text_ex(font, "Hex", rl.Vector2(hx + cell_w / 2 - 12, grid_y + 6), hdr_sz, 0, styles.TEXT_DIM)
+    rl.draw_text_ex(font, "Hex", rl.Vector2(hx + cell_w / 2 - 10, grid_y + 7), hdr_sz, 0, styles.TEXT_DIM)
 
     body_y = grid_y + HEADER_ROW_H
-
-    # Heatmap
-    flip_counts = self._stream.get_bit_flip_counts(mid)
-    max_flips = max(flip_counts) if flip_counts else 1
-    if max_flips == 0:
-      max_flips = 1
-    log_scaler = 255.0 / math.log2(1.2 * max_flips) if max_flips > 0 else 1.0
 
     # Build signal bit map: bit_pos -> signal_color_index
     # Also track MSB/LSB endpoints for label drawing
@@ -161,12 +145,14 @@ class BinaryView(Widget):
       for flat in bits:
         sig_bit_map[flat] = si % len(styles.SIGNAL_COLORS)
       if bits:
-        if sig.is_little_endian:
-          sig_endpoints[bits[0]] = "L"
-          sig_endpoints[bits[-1]] = "M"
-        else:
-          sig_endpoints[bits[0]] = "M"
-          sig_endpoints[bits[-1]] = "L"
+        # Use actual lsb/msb from signal, not sorted bit positions
+        # For both LE and BE: lsb bit gets "L", msb bit gets "M"
+        lsb_bit = sig.lsb
+        msb_bit = sig.msb
+        if lsb_bit in bits:
+          sig_endpoints[lsb_bit] = "L"
+        if msb_bit in bits:
+          sig_endpoints[msb_bit] = "M"
 
     # Scissor
     rl.begin_scissor_mode(int(rect.x), int(body_y),
@@ -177,15 +163,25 @@ class BinaryView(Widget):
     self._hovered_cell = self._hit_test(rect, mouse_pos, n_bytes, cell_w, cell_h, label_w)
     self._hovered_signal = None
     hovered_signal_bits: set[int] = set()
-    selected_signal_bits: set[int] = set()
     if self._hovered_cell and self._hovered_cell[1] < 8:
       self._hovered_signal = self._get_signal_at_cell(*self._hovered_cell)
       if self._hovered_signal:
         hovered_signal_bits = self._signal_bit_set(self._hovered_signal, n_bytes)
-    if self._selected_signal:
-      selected_signal_bits = self._signal_bit_set(self._selected_signal, n_bytes)
 
-    bit_font_sz = 18
+    # Font sizes matching Qt cabana (~13px for bits, 8px for M/L labels)
+    bit_font_sz = 14
+    ml_font_sz = 8
+
+    # Build per-cell signal lookup for border drawing: (row, col) -> set of signal indices
+    cell_sigs: dict[tuple[int, int], set[int]] = {}
+    for si, sig in enumerate(signals):
+      for flat in self._signal_bit_set(sig, n_bytes):
+        row = flat // 8
+        col = 7 - (flat % 8)  # flat bit -> display column
+        key = (row, col)
+        if key not in cell_sigs:
+          cell_sigs[key] = set()
+        cell_sigs[key].add(si)
 
     for byte_idx in range(n_bytes):
       ry = body_y + byte_idx * cell_h
@@ -193,7 +189,7 @@ class BinaryView(Widget):
       # Row label
       rl.draw_text_ex(font, str(byte_idx),
                       rl.Vector2(rect.x + styles.PAD, ry + (cell_h - bit_font_sz) / 2),
-                      hdr_sz, 0, styles.TEXT_DIM)
+                      12, 0, styles.TEXT_DIM)
 
       for bit in range(8):
         cx = grid_x + bit * cell_w
@@ -202,67 +198,73 @@ class BinaryView(Widget):
 
         # --- Cell background ---
         if has_signal:
-          # Signal color with solid alpha so signals are clearly visible
           sc = styles.SIGNAL_COLORS[sig_bit_map[bit_idx]]
-          # Base: solid signal color at ~35% opacity
-          base_alpha = 90
-          # Brighten based on heatmap
-          if bit_idx < len(flip_counts) and flip_counts[bit_idx] > 0:
-            normalized = math.log2(1.0 + flip_counts[bit_idx] * 1.2) * log_scaler
-            base_alpha = int(max(90, min(220, normalized)))
-          rl.draw_rectangle(int(cx), int(ry), int(cell_w), int(cell_h),
-                            rl.Color(sc.r, sc.g, sc.b, base_alpha))
-        else:
-          # Non-signal bits: subtle greyish-blue heatmap
-          alpha = 0.0
-          if bit_idx < len(flip_counts) and flip_counts[bit_idx] > 0:
-            normalized = math.log2(1.0 + flip_counts[bit_idx] * 1.2) * log_scaler
-            alpha = max(10.0, min(255.0, normalized))
-          if alpha > 0:
+          is_hovered = bit_idx in hovered_signal_bits
+          if is_hovered:
+            # Hovered: full signal color, darker (like Qt's .darker(125))
             rl.draw_rectangle(int(cx), int(ry), int(cell_w), int(cell_h),
-                              rl.Color(SIGNAL_BASE_COLOR.r, SIGNAL_BASE_COLOR.g,
-                                       SIGNAL_BASE_COLOR.b, int(alpha * 0.4)))
+                              rl.Color(sc.r * 4 // 5, sc.g * 4 // 5, sc.b * 4 // 5, 160))
+          else:
+            # Unselected: very muted fill + inset borders (like Qt cabana)
+            my_sigs = cell_sigs.get((byte_idx, bit), set())
+            for si_idx in my_sigs:
+              draw_left = si_idx not in cell_sigs.get((byte_idx, bit - 1), set())
+              draw_right = si_idx not in cell_sigs.get((byte_idx, bit + 1), set())
+              draw_top = si_idx not in cell_sigs.get((byte_idx - 1, bit), set())
+              draw_bottom = si_idx not in cell_sigs.get((byte_idx + 1, bit), set())
+
+              inset_x = cx + (3 if draw_left else 0)
+              inset_y = ry + (2 if draw_top else 0)
+              inset_w = cell_w - (3 if draw_left else 0) - (3 if draw_right else 0)
+              inset_h = cell_h - (2 if draw_top else 0) - (2 if draw_bottom else 0)
+
+              # Very subtle fill — just enough to see the signal region
+              sig_c = styles.SIGNAL_COLORS[si_idx % len(styles.SIGNAL_COLORS)]
+              rl.draw_rectangle(int(inset_x), int(inset_y), int(inset_w), int(inset_h),
+                                rl.Color(sig_c.r, sig_c.g, sig_c.b, 35))
+
+              # Border lines (signal color at moderate alpha)
+              border_c = rl.Color(sig_c.r * 4 // 5, sig_c.g * 4 // 5, sig_c.b * 4 // 5, 180)
+              if draw_left:
+                rl.draw_line(int(inset_x), int(inset_y), int(inset_x), int(inset_y + inset_h), border_c)
+              if draw_right:
+                rl.draw_line(int(inset_x + inset_w), int(inset_y), int(inset_x + inset_w), int(inset_y + inset_h), border_c)
+              if draw_top:
+                rl.draw_line(int(inset_x), int(inset_y), int(inset_x + inset_w), int(inset_y), border_c)
+              if draw_bottom:
+                rl.draw_line(int(inset_x), int(inset_y + inset_h), int(inset_x + inset_w), int(inset_y + inset_h), border_c)
 
         # Drag highlight
         if self._dragging and self._drag_start and self._drag_end:
-          if self._in_drag_range(byte_idx, 7 - bit):
-            rl.draw_rectangle(int(cx), int(ry), int(cell_w), int(cell_h), styles.DRAG_HIGHLIGHT)
+          if self._in_drag_highlight(byte_idx, 7 - bit, n_bytes):
+            if self._drag_mode == "resize" and self._resize_sig:
+              si = signals.index(self._resize_sig) if self._resize_sig in signals else 0
+              sc = styles.SIGNAL_COLORS[si % len(styles.SIGNAL_COLORS)]
+              rl.draw_rectangle(int(cx), int(ry), int(cell_w), int(cell_h),
+                                rl.Color(sc.r, sc.g, sc.b, 120))
+            else:
+              rl.draw_rectangle(int(cx), int(ry), int(cell_w), int(cell_h), styles.DRAG_HIGHLIGHT)
 
-        # Selected signal highlight
-        if bit_idx in selected_signal_bits:
-          rl.draw_rectangle(int(cx), int(ry), int(cell_w), int(cell_h),
-                            rl.Color(255, 255, 255, 30))
-
-        # Hover highlight (entire hovered signal)
-        if bit_idx in hovered_signal_bits and bit_idx not in selected_signal_bits:
-          rl.draw_rectangle(int(cx), int(ry), int(cell_w), int(cell_h),
-                            rl.Color(255, 255, 255, 20))
-
-        # Grid
-        rl.draw_rectangle_lines(int(cx), int(ry), int(cell_w), int(cell_h), styles.GRID)
-
-        # Bit text — 1 = bright white, 0 = very dim
+        # Bit text — same color for 0 and 1 (like Qt cabana uses QPalette::Text)
         val = (dat[byte_idx] >> (7 - bit)) & 1
         text = str(val)
-        text_color = rl.WHITE if val else rl.Color(60, 62, 70, 255)
+        text_color = styles.TEXT
         tw = rl.measure_text_ex(font, text, bit_font_sz * FONT_SCALE, 0).x
         rl.draw_text_ex(font, text,
                         rl.Vector2(cx + (cell_w - tw) / 2, ry + (cell_h - bit_font_sz) / 2),
                         bit_font_sz, 0, text_color)
 
-        # MSB/LSB endpoint label (small "M" or "L" at bottom-right, like Qt cabana)
+        # MSB/LSB label (8px like Qt cabana's small_font)
         endpoint = sig_endpoints.get(bit_idx)
         if endpoint:
-          ep_sz = 10
           rl.draw_text_ex(font, endpoint,
-                          rl.Vector2(cx + cell_w - ep_sz - 1, ry + cell_h - ep_sz - 2),
-                          ep_sz, 0, rl.Color(200, 200, 200, 180))
+                          rl.Vector2(cx + cell_w - ml_font_sz - 2, ry + cell_h - ml_font_sz - 3),
+                          ml_font_sz, 0, styles.TEXT_DIM)
 
       # Hex cell
       hx = grid_x + 8 * cell_w
       r, g, b = data.byte_colors[byte_idx] if byte_idx < len(data.byte_colors) else (80, 80, 80)
       rl.draw_rectangle(int(hx), int(ry), int(cell_w), int(cell_h), rl.Color(r, g, b, 160))
-      rl.draw_rectangle_lines(int(hx), int(ry), int(cell_w), int(cell_h), styles.GRID)
 
       hex_str = f"{dat[byte_idx]:02X}"
       tw = rl.measure_text_ex(font, hex_str, bit_font_sz * FONT_SCALE, 0).x
@@ -286,7 +288,7 @@ class BinaryView(Widget):
               self._drag_end = hit
               self._dragging = True
             else:
-              self._selected_signal = sig_at
+              # Click inside signal = fire callback (no drag, no selection state)
               self._drag_mode = ""
               self._dragging = False
               if self._on_signal_selected:
@@ -303,7 +305,6 @@ class BinaryView(Widget):
           if self._drag_start != self._drag_end:
             self._complete_drag(n_bytes)
           elif self._drag_mode == "resize" and self._resize_sig:
-            self._selected_signal = self._resize_sig
             if self._on_signal_selected:
               self._on_signal_selected(self._resize_sig)
         self._dragging = False
@@ -340,10 +341,33 @@ class BinaryView(Widget):
 
     if self._drag_mode == "resize" and self._resize_sig:
       old_sig = self._resize_sig
+
+      # Use sig.lsb/msb directly (correct for both LE and BE)
+      drag_start_flat = self._drag_start[0] * 8 + (7 - self._drag_start[1])
+      drag_end_flat = self._drag_end[0] * 8 + (7 - self._drag_end[1])
+
+      if drag_start_flat == old_sig.lsb:
+        # Dragged the LSB end — keep MSB fixed
+        new_lsb = drag_end_flat
+        new_msb = old_sig.msb
+      else:
+        # Dragged the MSB end — keep LSB fixed
+        new_lsb = old_sig.lsb
+        new_msb = drag_end_flat
+
+      if new_lsb > new_msb:
+        new_lsb, new_msb = new_msb, new_lsb
+
+      new_size = new_msb - new_lsb + 1
+      if new_size <= 0 or new_size > n_bytes * 8:
+        return
+
       new_sig = copy.deepcopy(old_sig)
-      new_sig.size = size
-      new_sig.start_bit = s_flat
-      new_sig.lsb = s_flat
+      new_sig.size = new_size
+      new_sig.lsb = new_lsb
+      new_sig.msb = new_msb
+      # start_bit convention: LE uses lsb, BE uses msb
+      new_sig.start_bit = new_lsb if old_sig.is_little_endian else new_msb
       cmd = EditSignalCommand(self._dbc, address, old_sig, new_sig)
       self._undo_stack.push(cmd)
     elif self._drag_mode == "create":
@@ -357,7 +381,7 @@ class BinaryView(Widget):
       self._on_signal_created()
 
   def _handle_keyboard(self, n_bytes: int):
-    sig = self._hovered_signal or self._selected_signal
+    sig = self._hovered_signal
     if not sig or not self._selected_mid:
       return
 
@@ -368,7 +392,6 @@ class BinaryView(Widget):
         rl.is_key_pressed(rl.KeyboardKey.KEY_X)):
       cmd = RemoveSignalCommand(self._dbc, address, sig)
       self._undo_stack.push(cmd)
-      self._selected_signal = None
       if self._on_signal_created:
         self._on_signal_created()
 
@@ -384,18 +407,31 @@ class BinaryView(Widget):
       cmd = EditSignalCommand(self._dbc, address, sig, new_sig)
       self._undo_stack.push(cmd)
 
-  def _in_drag_range(self, byte_idx: int, bit: int) -> bool:
+  def _in_drag_highlight(self, byte_idx: int, bit: int, n_bytes: int) -> bool:
+    """Check if a bit should be highlighted during drag.
+    For create: highlights the drag range.
+    For resize: highlights from the signal's fixed end to the drag position."""
     if not self._drag_start or not self._drag_end:
       return False
-    s_byte, s_bit = self._drag_start
-    e_byte, e_bit = self._drag_end
-    # Convert column index to bit index (col 0 = bit 7, col 7 = bit 0)
-    s_flat = s_byte * 8 + (7 - s_bit)
-    e_flat = e_byte * 8 + (7 - e_bit)
-    if s_flat > e_flat:
-      s_flat, e_flat = e_flat, s_flat
+
     flat = byte_idx * 8 + bit
-    return s_flat <= flat <= e_flat
+    drag_end_flat = self._drag_end[0] * 8 + (7 - self._drag_end[1])
+
+    if self._drag_mode == "resize" and self._resize_sig:
+      sig = self._resize_sig
+      drag_start_flat = self._drag_start[0] * 8 + (7 - self._drag_start[1])
+      if drag_start_flat == sig.lsb:
+        # Dragging LSB — MSB is fixed
+        lo, hi = min(drag_end_flat, sig.msb), max(drag_end_flat, sig.msb)
+      else:
+        # Dragging MSB — LSB is fixed
+        lo, hi = min(drag_end_flat, sig.lsb), max(drag_end_flat, sig.lsb)
+      return lo <= flat <= hi
+    else:
+      # Create mode: simple range between start and end
+      s_flat = self._drag_start[0] * 8 + (7 - self._drag_start[1])
+      lo, hi = min(s_flat, drag_end_flat), max(s_flat, drag_end_flat)
+      return lo <= flat <= hi
 
 
 def _flip_bit_pos(pos: int) -> int:
